@@ -195,10 +195,16 @@ const FIELD_DEFS = [
   {key:'taixe',   label:'Tài xế',      test:h => h.includes('TÀI XẾ') || h.includes('TÀI ')},
 ];
 
-function parseTSV(text){
-  const lines = text.replace(/\r/g,'').split('\n').filter(l => l.trim() !== '');
-  if(lines.length < 2) return {rows:[], missingFields:[]};
-  const headerCells = lines[0].split('\t').map(h => h.trim().toUpperCase());
+function norm(s){
+  return (s || '')
+    .normalize('NFC')
+    .replace(/\u00A0/g, ' ')   // non-breaking space -> space thường
+    .replace(/\uFEFF/g, '')    // bỏ BOM ẩn nếu có
+    .trim();
+}
+
+function mapHeader(cells){
+  const headerCells = cells.map(h => norm(h).toUpperCase());
   const colMap = {};
   headerCells.forEach((h, idx) => {
     for(const def of FIELD_DEFS){
@@ -208,19 +214,36 @@ function parseTSV(text){
       }
     }
   });
+  return colMap;
+}
+
+function parseTSV(text){
+  const lines = text.replace(/\r/g,'').split('\n').filter(l => l.trim() !== '');
+  if(lines.length < 2) return {rows:[], missingFields:[], headerLine:-1};
+
+  // Tự dò dòng tiêu đề trong 5 dòng đầu (phòng trường hợp dán dư dòng trống/dòng lạ phía trên)
+  let bestIdx = 0, bestScore = -1, bestMap = {};
+  for(let i=0; i<Math.min(5, lines.length); i++){
+    const cells = lines[i].split('\t');
+    const map = mapHeader(cells);
+    const score = Object.keys(map).length;
+    if(score > bestScore){ bestScore = score; bestIdx = i; bestMap = map; }
+  }
+
+  const colMap = bestMap;
   const missingFields = FIELD_DEFS.filter(d => colMap[d.key] === undefined).map(d => d.label);
   const rows = [];
-  for(let i=1;i<lines.length;i++){
+  for(let i=bestIdx+1;i<lines.length;i++){
     const cells = lines[i].split('\t');
     const row = {};
     FIELD_DEFS.forEach(def => {
       const idx = colMap[def.key];
-      row[def.key] = idx !== undefined ? (cells[idx] || '').trim() : '';
+      row[def.key] = idx !== undefined ? norm(cells[idx]) : '';
     });
     if(Object.values(row).every(v => v === '')) continue;
     rows.push(row);
   }
-  return {rows, missingFields};
+  return {rows, missingFields, headerLine:bestIdx};
 }
 
 function buildKey(row, counter){
@@ -285,9 +308,13 @@ document.getElementById('compareBtn').addEventListener('click', () => {
     return;
   }
 
-  const missing = [...new Set([...p1.missingFields, ...p2.missingFields])];
-  if(missing.length > 0){
-    statusEl.textContent = 'Không tìm thấy cột: ' + missing.join(', ') + ' — kiểm tra lại tên tiêu đề.';
+  const missing1 = p1.missingFields;
+  const missing2 = p2.missingFields;
+  if(missing1.length > 0 || missing2.length > 0){
+    let msg = '';
+    if(missing1.length) msg += 'File 1 thiếu cột: ' + missing1.join(', ') + '. ';
+    if(missing2.length) msg += 'File 2 thiếu cột: ' + missing2.join(', ') + '.';
+    statusEl.textContent = msg + ' (Dòng tiêu đề nhận ở dòng ' + (p1.headerLine+1) + ' / ' + (p2.headerLine+1) + ')';
   } else {
     statusEl.textContent = '';
   }
